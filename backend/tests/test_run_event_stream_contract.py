@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 import pytest
@@ -96,7 +97,14 @@ async def _persist_subagent_batch(store) -> list[dict]:
 async def _record_run_end(store) -> dict:
     journal = RunJournal("run-output", "thread-output", store, flush_threshold=100)
     journal.on_chain_end(
-        {"messages": [AIMessage(content="final answer", id="final-message")]},
+        {
+            "messages": [AIMessage(content="final answer", id="final-message")],
+            # Nested values that are not directly JSON serializable: the
+            # projection must make all three backends agree on them.
+            "tags": {"beta", "alpha"},
+            "finished_at": dt.datetime(2026, 9, 11, 3, 4, 5, tzinfo=dt.UTC),
+            "artifact": PurePosixPath("/mnt/user-data/outputs/report.md"),
+        },
         run_id=uuid4(),
         parent_run_id=None,
     )
@@ -275,11 +283,20 @@ async def test_run_end_backend_storage_semantics_match_contract(tmp_path):
     for event in (memory_event, jsonl_event, database_event):
         _assert_fixed_event_valid(event, persisted=True)
 
-    assert isinstance(memory_event["content"]["messages"][0], AIMessage)
-    assert isinstance(jsonl_event["content"]["messages"][0], str)
-    assert isinstance(database_event["content"]["messages"][0], str)
-    assert "final answer" in jsonl_event["content"]["messages"][0]
-    assert "final answer" in database_event["content"]["messages"][0]
+    # The producer projects the root graph output before it enters any store, so
+    # all three backends persist and restore the same value. Before that
+    # projection the memory store returned live Python values while the JSON
+    # stores returned ``str()`` coercions of them.
+    assert memory_event["content"] == jsonl_event["content"] == database_event["content"]
+
+    content = memory_event["content"]
+    assert isinstance(content["messages"][0], dict)
+    assert content["messages"][0]["content"] == "final answer"
+    assert content["messages"][0]["type"] == "ai"
+    assert content["tags"] == ["alpha", "beta"]
+    assert content["finished_at"] == "2026-09-11T03:04:05+00:00"
+    assert content["artifact"] == "/mnt/user-data/outputs/report.md"
+    assert json.dumps(content, ensure_ascii=False, allow_nan=False)
 
 
 @pytest.mark.anyio

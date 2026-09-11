@@ -111,21 +111,34 @@ Ordinary task-tool subagents forward both loop-detection and tool-promotion
 appends to the parent run loop through dedicated recorder context keys. The
 loop-bound `RunJournal` itself never enters the isolated subagent loop.
 
-### Opaque Run Outputs
+### Run Outputs
 
-`run.end.content` is the root graph output and is intentionally opaque. Its
-nested representation is not currently identical across storage backends:
+`run.end.content` is the root graph output as supplied by LangGraph. The
+producer projects it through `runtime/events/canonical.py::canonical_event_content()`
+before the event reaches any store, so all three backends persist the same
+value and read it back identically:
 
-- `MemoryRunEventStore` retains the original Python container and nested
-  values.
-- `JsonlRunEventStore` and `DbRunEventStore` serialize through
-  `json.dumps(default=str)`, so nested values that are not directly JSON
-  serializable are read back as strings.
+- LangChain and pydantic objects are projected through `model_dump()`, so an
+  `AIMessage` is stored in the same shape `llm.*` events already use;
+- datetimes, dates, and times become ISO-8601 strings; `UUID`, `Decimal`, and
+  `PurePath` become strings; sets become sorted lists; mappings with non-string
+  keys get those keys stringified; byte payloads become a base64 marker;
+- a value with no structured form becomes a
+  `{"__deerflow_type__": "module.QualName"}` marker, and a reference cycle
+  becomes `{"__deerflow_type__": "circular-reference"}`. `str()` is never used
+  as a fallback, so persisted content cannot embed a memory address;
+- the projection is JSON-safe, so the JSONL and database stores no longer
+  depend on `json.dumps(default=str)` for this event.
 
-Consumers may use `run.end` as completion evidence, but must not depend on
-backend-identical nested output values. Normalizing those values would be a
-separate runtime compatibility change rather than part of this current-state
-contract.
+`__deerflow_type__` is reserved for the runtime. Determinism is part of the
+guarantee: the projection depends only on the value, never on `repr()`,
+addresses, or the iteration order of an unordered container.
+
+`run.end.content` stays opaque in the schema sense (`content_schema: true`).
+Consumers may use `run.end` as completion evidence and may rely on the
+backend-identical projection, but the payload itself is the agent's output
+rather than a versioned API: read the fields you recognize and tolerate both
+unknown fields and the type marker.
 
 `subagents/step_events.py::subagent_run_event()` maps streamed `task_*` chunks
 to persisted events. The worker batches them through `put_batch()`:
@@ -203,9 +216,6 @@ be used by new producers.
 - `run.end.metadata.status` is only a root graph completion marker and is
   always `success`. `RunRow.status` remains authoritative for lifecycle state,
   and worker loss may leave no terminal event.
-- Nested non-JSON values in `run.end.content` have backend-dependent
-  representations: memory retains Python values, while JSONL and database
-  stores read them back as strings.
 - Durable batch subagent loop detection and deferred-tool promotion do not
   emit middleware events because those runs have no parent run journal.
 - Journal attribution, token accounting, and external tracing metadata still

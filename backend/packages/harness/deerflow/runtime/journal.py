@@ -33,6 +33,7 @@ from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMes
 from langgraph.types import Command
 
 from deerflow.agents.human_input import read_human_input_response
+from deerflow.runtime.events.canonical import canonical_event_content
 from deerflow.runtime.events.catalog import (
     LLM_AI_RESPONSE_EVENT,
     LLM_ERROR_EVENT,
@@ -375,7 +376,11 @@ class RunJournal(BaseCallbackHandler):
         self._put(
             event_type=RUN_END_EVENT.event_type,
             category=RUN_END_EVENT.category,
-            content=outputs,
+            # The root graph output is arbitrary Python. Projecting it here, once,
+            # is what makes every store persist and restore the same value: the
+            # JSONL and database stores would otherwise coerce nested non-JSON
+            # values with ``str()`` while the memory store kept the originals.
+            content=canonical_event_content(outputs),
             metadata={"status": "success"},
         )
         self._flush_sync()

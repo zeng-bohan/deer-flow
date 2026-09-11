@@ -93,11 +93,11 @@
       "category": "outputs",
       "producer": "RunJournal.on_chain_end(parent_run_id=None)",
       "content_schema": true,
-      "content_description": "Opaque root graph outputs as supplied by LangGraph. Values nested inside the output may have backend-dependent representations when they are not directly JSON serializable.",
+      "content_description": "Opaque root graph outputs as supplied by LangGraph, projected to a deterministic JSON-safe value by runtime/events/canonical.py before the event reaches a store. Values that are not directly JSON serializable are projected (LangChain/pydantic objects through model_dump, datetimes as ISO-8601, sets as sorted lists) or replaced by a reserved __deerflow_type__ marker, so all three backends persist and restore the same value.",
       "storage_semantics": {
-        "memory": "Retains the original Python container and nested values.",
-        "jsonl": "Persists JSON with json.dumps(default=str), so nested non-JSON values are restored as strings.",
-        "database": "Persists the top-level payload as JSON text with json.dumps(default=str), then restores the JSON container on read; nested non-JSON values remain strings."
+        "memory": "Stores the producer's projected value as-is.",
+        "jsonl": "Persists the projected value as JSON text and restores it unchanged on read.",
+        "database": "Persists the projected value as JSON text (metadata content_is_json) and restores it unchanged on read."
       },
       "metadata_schema": {
         "type": "object",
@@ -434,12 +434,6 @@
       "id": "terminal-run-status",
       "status": "split source of truth",
       "notes": "run.end is only a root graph completion marker and always says success. RunRow.status is authoritative for success, error, interrupted, and timeout; worker loss may leave no terminal run event."
-    },
-    {
-      "id": "run-end-backend-serialization",
-      "status": "backend-dependent opaque payload",
-      "affected_event_types": ["run.end"],
-      "notes": "Memory retains nested Python values in root graph outputs, while JSONL and database persistence stringify nested values that are not directly JSON serializable. Consumers must not rely on backend-identical nested run.end content."
     },
     {
       "id": "middleware-coverage",
