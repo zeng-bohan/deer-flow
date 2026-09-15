@@ -41,8 +41,29 @@ def checkpoint_metadata(checkpoint_tuple: Any) -> dict[str, Any]:
 
 
 def is_duration_only_checkpoint(checkpoint_tuple: Any) -> bool:
-    writes = checkpoint_metadata(checkpoint_tuple).get("writes")
-    return isinstance(writes, dict) and "runtime_run_duration" in writes
+    """Return whether the tuple is a metadata-only run-duration checkpoint.
+
+    ``persist_run_history_metadata`` (``deerflow.runtime.runs.worker``) is the
+    only writer of these checkpoints. It stamps
+    ``metadata["writes"]["runtime_run_duration"]``, which the memory and SQLite
+    savers round-trip unchanged. The Postgres savers instead funnel metadata
+    through langgraph's ``get_serializable_checkpoint_metadata``, which pops
+    ``writes`` before the row lands — so on Postgres the marker never comes
+    back and every duration checkpoint would look like an addressable state to
+    the replay and history paths. The writer's own index keys (``run_durations``
+    and ``run_message_ids``) and ``source == "update"`` do survive a Postgres
+    round trip, and no other checkpoint carries them: a graph step is stamped
+    ``source: "loop"``/``"step"``/``"input"``, and a client ``update_state``
+    builds its metadata internally, so it cannot inject those keys.
+    """
+
+    metadata = checkpoint_metadata(checkpoint_tuple)
+    writes = metadata.get("writes")
+    if isinstance(writes, dict) and "runtime_run_duration" in writes:
+        return True
+    if metadata.get("source") != "update":
+        return False
+    return "run_durations" in metadata or "run_message_ids" in metadata
 
 
 def has_pending_tasks(checkpoint_tuple: Any) -> bool:
